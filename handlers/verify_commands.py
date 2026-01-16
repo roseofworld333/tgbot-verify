@@ -177,6 +177,80 @@ async def verify2_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db
             f"已退回 {VERIFY_COST} 积分"
         )
 
+async def verify3_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database):
+    """处理 /verify2 命令 - ChatGPT Teacher K12"""
+    user_id = update.effective_user.id
+
+    if db.is_user_blocked(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用此功能。")
+        return
+
+    if not db.user_exists(user_id):
+        await update.message.reply_text("请先使用 /start 注册。")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            get_verify_usage_message("/verify2", "ChatGPT Teacher K12")
+        )
+        return
+
+    url = context.args[0]
+    user = db.get_user(user_id)
+    if user["balance"] < VERIFY_COST:
+        await update.message.reply_text(
+            get_insufficient_balance_message(user["balance"])
+        )
+        return
+
+    verification_id = K12Verifier.parse_verification_id(url)
+    if not verification_id:
+        await update.message.reply_text("无效的 SheerID 链接，请检查后重试。")
+        return
+
+    if not db.deduct_balance(user_id, VERIFY_COST):
+        await update.message.reply_text("扣除积分失败，请稍后重试。")
+        return
+
+    processing_msg = await update.message.reply_text(
+        f"开始处理 ChatGPT Teacher K12 认证...\n"
+        f"验证ID: {verification_id}\n"
+        f"已扣除 {VERIFY_COST} 积分\n\n"
+        "请稍候，这可能需要 1-2 分钟..."
+    )
+
+    try:
+        verifier = K12Verifier(verification_id)
+        result = await asyncio.to_thread(verifier.verify)
+
+        db.add_verification(
+            user_id,
+            "chatgpt_teacher_k12",
+            url,
+            "success" if result["success"] else "failed",
+            str(result),
+        )
+
+        if result["success"]:
+            result_msg = "✅ 认证成功！\n\n"
+            if result.get("pending"):
+                result_msg += "文档已提交，等待人工审核。\n"
+            if result.get("redirect_url"):
+                result_msg += f"跳转链接：\n{result['redirect_url']}"
+            await processing_msg.edit_text(result_msg)
+        else:
+            db.add_balance(user_id, VERIFY_COST)
+            await processing_msg.edit_text(
+                f"❌ 认证失败：{result.get('message', '未知错误')}\n\n"
+                f"已退回 {VERIFY_COST} 积分"
+            )
+    except Exception as e:
+        logger.error("验证过程出错: %s", e)
+        db.add_balance(user_id, VERIFY_COST)
+        await processing_msg.edit_text(
+            f"❌ 处理过程中出现错误：{str(e)}\n\n"
+            f"已退回 {VERIFY_COST} 积分"
+        )
 
 async def verify4_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Database):
     """处理 /verify4 命令 - Bolt.new Teacher（自动获取code版）"""
